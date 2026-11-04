@@ -1,0 +1,27 @@
+﻿<Application x:Class="InternetMonitor.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:sys="clr-namespace:System;assembly=mscorlib"
+             ShutdownMode="OnExplicitShutdown">
+    <Application.Resources>
+        <!-- 以下默认值会在启动时被用户配置覆盖（Appearance.Apply） -->
+        <FontFamily x:Key="AppFontFamily">Microsoft YaHei UI</FontFamily>
+        <SolidColorBrush x:Key="BgBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="SurfaceBrush" Color="#F7F7F8" />
+        <SolidColorBrush x:Key="HoverBrush" Color="#12000000" />
+        <SolidColorBrush x:Key="BorderBrushSoft" Color="#E9EBEF" />
+        <SolidColorBrush x:Key="SwitchTrack" Color="#E6E7EA" />
+        <SolidColorBrush x:Key="TextPrimary" Color="#101318" />
+        <SolidColorBrush x:Key="TextSecondary" Color="#6E737C" />
+        <SolidColorBrush x:Key="TextMuted" Color="#A0A4AB" />
+        <SolidColorBrush x:Key="AccentDown" Color="#2F6BFF" />
+        <SolidColorBrush x:Key="AccentUp" Color="#E8890C" />
+
+        <sys:Double x:Key="FontSizeTitle">12</sys:Double>
+        <sys:Double x:Key="FontSizeValue">28</sys:Double>
+        <sys:Double x:Key="FontSizeUnit">11</sys:Double>
+        <sys:Double x:Key="FontSizeLabel">11</sys:Double>
+        <sys:Double x:Key="FontSizeSmall">10.5</sys:Double>
+        <sys:Double x:Key="FontSizeFooter">10.5</sys:Double>
+    </Application.Resources>
+</Application>
