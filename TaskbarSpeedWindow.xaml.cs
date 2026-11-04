@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
@@ -8,16 +9,26 @@ using System.Windows.Threading;
 
 namespace InternetMonitor;
 
-/// <summary>贴在任务栏通知区域左侧的极简网速读数，鼠标可穿透。</summary>
+/// <summary>
+/// 贴在任务栏通知区域左侧的极简网速读数，鼠标可穿透。
+/// 通过 SetParent 把自己变成 Shell_TrayWnd 的子窗口，
+/// 这样 Z 序自动跟随任务栏（开始菜单期间也不会消失）。
+/// </summary>
 public partial class TaskbarSpeedWindow : Window
 {
+    private const int GWL_STYLE = -16;
     private const int GWL_EXSTYLE = -20;
-    private const int WS_EX_TOOLWINDOW = 0x00000080;
-    private const int WS_EX_TRANSPARENT = 0x00000020;
-    private const int WS_EX_NOACTIVATE = 0x08000000;
-    private const uint MONITOR_DEFAULTTONEAREST = 2;
+    private const uint WS_CHILD = 0x40000000;
+    private const uint WS_POPUP = 0x80000000;
+    private const uint WS_EX_LAYERED = 0x00080000;
+    private const uint WS_EX_TOOLWINDOW = 0x00000080;
+    private const uint WS_EX_TRANSPARENT = 0x00000020;
+    private const uint WS_EX_NOACTIVATE = 0x08000000;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOACTIVATE = 0x0010;
 
-    // 16ms 贴近 60 帧，任务栏滑动时逐帧跟随；空闲时只有几次 GetWindowRect，不占 CPU
+    // 16ms 贴近 60 帧，任务栏自动隐藏时逐帧跟随；空闲时只有几次 GetWindowRect，不占 CPU
     private readonly DispatcherTimer _followTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
 
     // 背景明暗取色间隔，换壁纸/切主题后 0.25 秒内就能跟上
@@ -34,8 +45,13 @@ public partial class TaskbarSpeedWindow : Window
     private double _lastTop = double.NaN;
     private double _lastRx;
     private double _lastTx;
+    private IntPtr _handle;
+    private IntPtr _trayWnd;   // Shell_TrayWnd 句柄
+    private IntPtr _trayNotifyWnd;  // TrayNotifyWnd 句柄（通知区，用来算锚点）
+    private bool _isAttached;  // 是否已成功 SetParent 到任务栏
     private DateTime _lastScaleProbe = DateTime.MinValue;
     private DateTime _lastContrastSample = DateTime.MinValue;
+    private DateTime _lastAttachAttempt = DateTime.MinValue;
 
     public TaskbarSpeedWindow()
     {
@@ -45,7 +61,7 @@ public partial class TaskbarSpeedWindow : Window
         _followTimer.Tick += (_, _) => Reposition();
     }
 
-    /// <summary>持续跟随任务栏，滑入滑出时与任务栏同帧移动。</summary>
+    /// <summary>启用后持续跟随任务栏位置。</summary>
     public void SetEnabled(bool enabled)
     {
         if (_enabled == enabled)
@@ -180,9 +196,82 @@ public partial class TaskbarSpeedWindow : Window
     {
         base.OnSourceInitialized(e);
 
-        var handle = new WindowInteropHelper(this).Handle;
-        int style = GetWindowLong(handle, GWL_EXSTYLE);
-        SetWindowLong(handle, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT);
+        _handle = new WindowInteropHelper(this).Handle;
+
+        // 设置扩展样式：分层窗口 + 工具窗口（不在 Alt+Tab 里）+ 不抢焦点 + 鼠标穿透
+        int exStyle = GetWindowLong(_handle, GWL_EXSTYLE);
+        SetWindowLong(_handle, GWL_EXSTYLE, exStyle | (int)WS_EX_LAYERED | (int)WS_EX_TOOLWINDOW | (int)WS_EX_NOACTIVATE | (int)WS_EX_TRANSPARENT);
+    }
+
+    /// <summary>
+    /// 把窗口变成 Shell_TrayWnd 的子窗口。
+    /// 这样 Z 序自动跟随任务栏，开始菜单期间也不会消失。
+    /// </summary>
+    private bool TryAttach()
+    {
+        if (_handle == IntPtr.Zero)
+            return false;
+
+        var tray = FindWindow("Shell_TrayWnd", null);
+        if (tray == IntPtr.Zero)
+            return false;
+
+        // 验证句柄确实是 Shell_TrayWnd（任务栏被重建后旧句柄可能失效）
+        var className = new StringBuilder(64);
+        if (GetClassName(tray, className, className.Capacity) == 0 || className.ToString() != "Shell_TrayWnd")
+            return false;
+
+        if (_isAttached && _trayWnd == tray)
+        {
+            // 验证父窗口确实是我们的预期
+            if (GetParent(_handle) == tray)
+                return true;
+            _isAttached = false;
+        }
+
+        // 改窗口基础样式：从 WS_POPUP 改成 WS_CHILD
+        // WPF WindowStyle=None+AllowsTransparency=True 默认是 WS_POPUP
+        int oldStyle = GetWindowLong(_handle, GWL_STYLE);
+        uint newStyle = (uint)oldStyle & ~WS_POPUP;  // 去掉 popup
+        newStyle |= WS_CHILD;   // 加上 child
+        SetWindowLong(_handle, GWL_STYLE, (int)newStyle);
+
+        // SetParent 到 Shell_TrayWnd
+        SetParent(_handle, tray);
+
+        // 验证成功
+        if (GetParent(_handle) != tray)
+            return false;
+
+        _trayWnd = tray;
+        _trayNotifyWnd = IntPtr.Zero;  // 重新找通知区
+        _isAttached = true;
+
+        return true;
+    }
+
+    /// <summary>确保窗口已挂到任务栏，失败时定期重试。</summary>
+    private void EnsureAttached()
+    {
+        if (_isAttached && _trayWnd != IntPtr.Zero && IsWindow(_trayWnd))
+        {
+            // 验证父窗口还是 Shell_TrayWnd
+            if (GetParent(_handle) != _trayWnd)
+            {
+                _isAttached = false;
+                _trayWnd = IntPtr.Zero;
+            }
+        }
+
+        if (!_isAttached)
+        {
+            // 限频重试：explorer 重启后 Shell_TrayWnd 会消失再重建
+            if ((DateTime.UtcNow - _lastAttachAttempt).TotalSeconds >= 2)
+            {
+                _lastAttachAttempt = DateTime.UtcNow;
+                TryAttach();
+            }
+        }
     }
 
     private void Reposition()
@@ -190,20 +279,31 @@ public partial class TaskbarSpeedWindow : Window
         if (!_enabled)
             return;
 
-        var layout = TaskbarLayoutDetector.Detect();
-
-        if (layout == null || layout.Hidden)
-        {
-            if (IsVisible)
-                Hide();
-            return;
-        }
-
+        // 第一步：先 Show() 创建 HWND（WPF 窗口必须 Show 之后才有句柄）
         if (!IsVisible)
         {
             Show();
             _layoutDirty = true;
             _lastScaleProbe = DateTime.MinValue;
+        }
+
+        // 第二步：确认 _handle 已就绪
+        if (_handle == IntPtr.Zero)
+        {
+            _handle = new WindowInteropHelper(this).Handle;
+            if (_handle == IntPtr.Zero)
+                return;
+        }
+
+        // 第三步：SetParent 到 Shell_TrayWnd（Show 之后才能成功）
+        EnsureAttached();
+
+        if (!_isAttached || _trayWnd == IntPtr.Zero)
+        {
+            // 暂时挂不上（比如 Shell_TrayWnd 不存在），先隐藏，等下次重试
+            if (IsVisible && _trayWnd == IntPtr.Zero)
+                Hide();
+            return;
         }
 
         // 每帧重复测量代价高，只在文本或字号变化后重新测量一次
@@ -227,46 +327,87 @@ public partial class TaskbarSpeedWindow : Window
         double scaleX = _scaleX;
         double scaleY = _scaleY;
 
-        double width = ActualWidth * scaleX;
-        double height = ActualHeight * scaleY;
+        double ourWidth = ActualWidth * scaleX;
+        double ourHeight = ActualHeight * scaleY;
 
-        double x;
-        double y;
-        if (layout.Horizontal)
+        // 获取任务栏尺寸
+        if (!GetWindowRect(_trayWnd, out var trayRect))
         {
-            x = layout.AnchorLeft - width - 6;
-            // 以任务栏本体位置为准：自动隐藏时任务栏滑入/滑出，读数跟着一起进出屏幕
-            y = layout.Bar.Top + (layout.Bar.Height - height) / 2;
+            // 任务栏句柄突然失效（explorer 重启中），重新挂接
+            _isAttached = false;
+            return;
+        }
+
+        int trayWidth = trayRect.Width;
+        int trayHeight = trayRect.Height;
+        bool horizontal = trayWidth >= trayHeight;
+
+        // 获取通知区锚点
+        double anchorPos;
+        if (horizontal)
+        {
+            anchorPos = trayWidth - 6;  // 默认靠最右
+            if (_trayNotifyWnd == IntPtr.Zero || !GetWindowRect(_trayNotifyWnd, out _))
+                _trayNotifyWnd = FindWindowEx(_trayWnd, IntPtr.Zero, "TrayNotifyWnd", null);
+
+            if (_trayNotifyWnd != IntPtr.Zero && GetWindowRect(_trayNotifyWnd, out var notifyRect))
+            {
+                // notifyRect 是屏幕坐标，转换成相对 Shell_TrayWnd 的坐标
+                int notifyLeft = notifyRect.Left - trayRect.Left;
+                if (notifyLeft > 0 && notifyLeft < trayWidth)
+                    anchorPos = notifyLeft - 6;
+            }
         }
         else
         {
-            x = layout.Bar.Left + (layout.Bar.Width - width) / 2;
-            y = layout.AnchorTop - height - 6;
+            anchorPos = trayHeight - 6;
+            if (_trayNotifyWnd == IntPtr.Zero || !GetWindowRect(_trayNotifyWnd, out _))
+                _trayNotifyWnd = FindWindowEx(_trayWnd, IntPtr.Zero, "TrayNotifyWnd", null);
+
+            if (_trayNotifyWnd != IntPtr.Zero && GetWindowRect(_trayNotifyWnd, out var notifyRect))
+            {
+                int notifyTop = notifyRect.Top - trayRect.Top;
+                if (notifyTop > 0 && notifyTop < trayHeight)
+                    anchorPos = notifyTop - 6;
+            }
         }
 
-        if (IsInsideMonitor(layout, x, y, width, height))
-            SampleTaskbarBrightness((int)x, (int)y, (int)width, (int)height);
+        // 相对 Shell_TrayWnd 客户区坐标
+        double x, y;
+        if (horizontal)
+        {
+            x = anchorPos - ourWidth;
+            y = (trayHeight - ourHeight) / 2.0;
+        }
+        else
+        {
+            x = (trayWidth - ourWidth) / 2.0;
+            y = anchorPos - ourHeight;
+        }
 
+        // 采样任务栏明暗（用屏幕坐标）
+        int screenX = trayRect.Left + (int)x;
+        int screenY = trayRect.Top + (int)y;
+        SampleTaskbarBrightness(screenX, screenY, (int)ourWidth, (int)ourHeight);
+
+        // WPF 的 Left/Top 是宿主坐标系。作为 WS_CHILD 窗口后，设成相对父窗口的坐标就行
         double left = x / scaleX;
         double top = y / scaleY;
 
-        // 位置没变就别重复设置窗口位置，省掉多余的 SetWindowPos
-        if (Math.Abs(left - _lastLeft) < 0.5 && Math.Abs(top - _lastTop) < 0.5)
-            return;
+        // 位置没变就别重复设置
+        bool moved = double.IsNaN(_lastLeft) || double.IsNaN(_lastTop)
+            || Math.Abs(left - _lastLeft) >= 0.5 || Math.Abs(top - _lastTop) >= 0.5;
 
-        _lastLeft = left;
-        _lastTop = top;
-        Left = left;
-        Top = top;
+        if (moved)
+        {
+            _lastLeft = left;
+            _lastTop = top;
+            Left = left;
+            Top = top;
+        }
     }
 
-    /// <summary>读数完全落在屏幕内时才允许截屏取色，避免截到屏幕外。</summary>
-    private static bool IsInsideMonitor(TaskbarLayout layout, double x, double y, double width, double height)
-    {
-        var monitor = layout.Monitor;
-        return x >= monitor.Left && y >= monitor.Top
-            && x + width <= monitor.Right && y + height <= monitor.Bottom;
-    }
+    // ===== P/Invoke =====
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr FindWindow(string? className, string? windowName);
@@ -277,26 +418,23 @@ public partial class TaskbarSpeedWindow : Window
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect rect);
 
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
-
-    [DllImport("user32.dll")]
-    private static extern bool IsZoomed(IntPtr hWnd);
-
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder className, int maxCount);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint flags);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int index);
 
     [DllImport("user32.dll")]
     private static extern int SetWindowLong(IntPtr hWnd, int index, int value);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
@@ -308,114 +446,5 @@ public partial class TaskbarSpeedWindow : Window
 
         public int Width => Right - Left;
         public int Height => Bottom - Top;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MonitorInfo
-    {
-        public int Size;
-        public NativeRect Monitor;
-        public NativeRect Work;
-        public uint Flags;
-    }
-
-    private sealed class TaskbarLayout
-    {
-        public NativeRect Bar;
-        public NativeRect Monitor;
-        public bool Horizontal;
-        public double AnchorLeft;
-        public double AnchorTop;
-        public bool Hidden;
-    }
-
-    private static class TaskbarLayoutDetector
-    {
-        private static IntPtr _bar;
-        private static IntPtr _tray;
-        private static NativeRect _monitor;
-        private static DateTime _lastSlowProbe = DateTime.MinValue;
-        private static bool _fullscreen;
-
-        public static TaskbarLayout? Detect()
-        {
-            // 逐帧调用，句柄和显示器范围做缓存，只有任务栏位置本身必须实时读取
-            if (_bar == IntPtr.Zero || !GetWindowRect(_bar, out _))
-                _bar = FindWindow("Shell_TrayWnd", null);
-
-            IntPtr bar = _bar;
-            if (bar == IntPtr.Zero || !GetWindowRect(bar, out var barRect) || barRect.Width <= 0 || barRect.Height <= 0)
-                return null;
-
-            var now = DateTime.UtcNow;
-            if ((now - _lastSlowProbe).TotalMilliseconds >= 250)
-            {
-                _lastSlowProbe = now;
-                ProbeSlow(bar);
-            }
-
-            var layout = new TaskbarLayout
-            {
-                Bar = barRect,
-                Monitor = _monitor,
-                Horizontal = barRect.Width >= barRect.Height,
-                Hidden = _fullscreen
-            };
-
-            if (_tray == IntPtr.Zero || !GetWindowRect(_tray, out _))
-                _tray = FindWindowEx(bar, IntPtr.Zero, "TrayNotifyWnd", null);
-
-            var trayRect = default(NativeRect);
-            bool hasTray = _tray != IntPtr.Zero && GetWindowRect(_tray, out trayRect) && trayRect.Width > 0;
-
-            if (layout.Horizontal)
-                layout.AnchorLeft = hasTray ? trayRect.Left : barRect.Right - 180;
-            else
-                layout.AnchorTop = hasTray ? trayRect.Top : barRect.Bottom - 180;
-
-            return layout;
-        }
-
-        /// <summary>显示器范围与全屏判定变化不频繁，限频探测即可。</summary>
-        private static void ProbeSlow(IntPtr bar)
-        {
-            var monitor = MonitorFromWindow(bar, MONITOR_DEFAULTTONEAREST);
-            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-            if (GetMonitorInfo(monitor, ref info))
-                _monitor = info.Monitor;
-
-            _fullscreen = IsFullscreenForeground(bar);
-        }
-
-        private static bool IsFullscreenForeground(IntPtr taskbar)
-        {
-            IntPtr foreground = GetForegroundWindow();
-            if (foreground == IntPtr.Zero || foreground == taskbar)
-                return false;
-
-            var className = new StringBuilder(256);
-            GetClassName(foreground, className, className.Capacity);
-            string name = className.ToString();
-
-            if (name is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Windows.UI.Core.CoreWindow")
-                return false;
-
-            // 最大化窗口的窗口矩形同样覆盖整个屏幕，但它不是全屏应用
-            if (IsZoomed(foreground))
-                return false;
-
-            if (!GetWindowRect(foreground, out var rect))
-                return false;
-
-            var monitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
-            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
-            if (!GetMonitorInfo(monitor, ref info))
-                return false;
-
-            return rect.Left <= info.Monitor.Left + 2
-                && rect.Top <= info.Monitor.Top + 2
-                && rect.Right >= info.Monitor.Right - 2
-                && rect.Bottom >= info.Monitor.Bottom - 2;
-        }
     }
 }
