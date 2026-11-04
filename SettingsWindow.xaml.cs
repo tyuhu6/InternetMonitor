@@ -52,6 +52,7 @@ public partial class SettingsWindow : Window
         FontCombo.SelectedItem = match ?? _state.FontFamily;
 
         FontScaleText.Text = $"{Math.Round(_state.FontScale * 100)}%";
+        SpeedUnitCombo.SelectedIndex = (int)SpeedFormatter.Parse(_state.SpeedUnit);
 
         UpdateSwatch(BgSwatch, _state.BgColor);
         UpdateSwatch(TextSwatch, _state.TextColor);
@@ -130,8 +131,31 @@ public partial class SettingsWindow : Window
         ApplyAll();
     }
 
-    private void FontMinus_Click(object sender, RoutedEventArgs e) => ChangeScale(-0.05);
+    /// <summary>弹层里的条目在按下时就完成选中，避免弹层收起把点击吞掉。</summary>
+    private void ComboItem_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not ComboBoxItem item)
+            return;
 
+        if (ItemsControl.ItemsControlFromItemContainer(item) is not ComboBox combo)
+            return;
+
+        combo.SelectedIndex = combo.ItemContainerGenerator.IndexFromContainer(item);
+        combo.IsDropDownOpen = false;
+        e.Handled = true;
+    }
+
+    private void SpeedUnitCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loading || SpeedUnitCombo.SelectedIndex < 0)
+            return;
+
+        _state.SpeedUnit = ((SpeedUnitMode)SpeedUnitCombo.SelectedIndex).ToString();
+        _owner.ApplySpeedUnit();
+        _owner.SaveStateNow();
+    }
+
+    private void FontMinus_Click(object sender, RoutedEventArgs e) => ChangeScale(-0.05);
     private void FontPlus_Click(object sender, RoutedEventArgs e) => ChangeScale(0.05);
 
     private void ChangeScale(double delta)
@@ -195,6 +219,7 @@ public partial class SettingsWindow : Window
     {
         _state.FontFamily = "Microsoft YaHei UI";
         _state.FontScale = 1.0;
+        _state.SpeedUnit = nameof(SpeedUnitMode.Auto);
         _state.BgColor = "#FFFFFF";
         _state.TextColor = "#101318";
         _state.DownColor = "#2F6BFF";

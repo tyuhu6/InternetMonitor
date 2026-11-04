@@ -20,7 +20,11 @@ public partial class TaskbarSpeedWindow : Window
     // 16ms 贴近 60 帧，任务栏滑动时逐帧跟随；空闲时只有几次 GetWindowRect，不占 CPU
     private readonly DispatcherTimer _followTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
 
+    // 背景明暗取色间隔，换壁纸/切主题后 0.25 秒内就能跟上
+    private static readonly TimeSpan ContrastSampleInterval = TimeSpan.FromMilliseconds(250);
+
     private Appearance _appearance = new();
+    private SpeedUnitMode _unit = SpeedUnitMode.Auto;
     private bool _taskbarIsDark = true;
     private bool _enabled;
     private bool _layoutDirty;
@@ -28,6 +32,8 @@ public partial class TaskbarSpeedWindow : Window
     private double _scaleY = 1;
     private double _lastLeft = double.NaN;
     private double _lastTop = double.NaN;
+    private double _lastRx;
+    private double _lastTx;
     private DateTime _lastScaleProbe = DateTime.MinValue;
     private DateTime _lastContrastSample = DateTime.MinValue;
 
@@ -102,7 +108,7 @@ public partial class TaskbarSpeedWindow : Window
     /// <summary>截取任务栏空白处的一小块像素，判断它到底是深色还是浅色。</summary>
     private void SampleTaskbarBrightness(int physicalX, int physicalY, int width, int height)
     {
-        if (DateTime.UtcNow - _lastContrastSample < TimeSpan.FromSeconds(5))
+        if (DateTime.UtcNow - _lastContrastSample < ContrastSampleInterval)
             return;
 
         _lastContrastSample = DateTime.UtcNow;
@@ -113,9 +119,9 @@ public partial class TaskbarSpeedWindow : Window
 
         try
         {
-            using var bitmap = new System.Drawing.Bitmap(48, 6);
+            using var bitmap = new System.Drawing.Bitmap(32, 4);
             using var graphics = System.Drawing.Graphics.FromImage(bitmap);
-            graphics.CopyFromScreen(sampleX, physicalY + Math.Max(0, height / 2 - 3), 0, 0, bitmap.Size);
+            graphics.CopyFromScreen(sampleX, physicalY + Math.Max(0, height / 2 - 2), 0, 0, bitmap.Size);
 
             double total = 0;
             for (int y = 0; y < bitmap.Height; y++)
@@ -127,7 +133,10 @@ public partial class TaskbarSpeedWindow : Window
                 }
             }
 
-            bool dark = total / (bitmap.Width * bitmap.Height) / 255 < 0.5;
+            double luminance = total / (bitmap.Width * bitmap.Height) / 255;
+
+            // 迟滞判断：亮度落在中间地带时保持当前配色，避免壁纸渐变/过渡动画中来回闪
+            bool dark = _taskbarIsDark ? luminance < 0.58 : luminance < 0.42;
             if (dark == _taskbarIsDark)
                 return;
 
@@ -142,8 +151,28 @@ public partial class TaskbarSpeedWindow : Window
 
     public void SetSpeed(double rxBytesPerSec, double txBytesPerSec)
     {
-        DownText.Text = Compact(rxBytesPerSec);
-        UpText.Text = Compact(txBytesPerSec);
+        _lastRx = rxBytesPerSec;
+        _lastTx = txBytesPerSec;
+        ShowSpeed();
+    }
+
+    /// <summary>切换单位后立刻按新单位重画。</summary>
+    public void SetSpeedUnit(SpeedUnitMode mode)
+    {
+        if (_unit == mode)
+            return;
+
+        _unit = mode;
+        ShowSpeed();
+    }
+
+    private void ShowSpeed()
+    {
+        var (rxValue, rxUnit) = SpeedFormatter.Format(_lastRx, _unit);
+        var (txValue, txUnit) = SpeedFormatter.Format(_lastTx, _unit);
+
+        DownText.Text = rxValue + rxUnit;
+        UpText.Text = txValue + txUnit;
         _layoutDirty = true;
     }
 
@@ -237,19 +266,6 @@ public partial class TaskbarSpeedWindow : Window
         var monitor = layout.Monitor;
         return x >= monitor.Left && y >= monitor.Top
             && x + width <= monitor.Right && y + height <= monitor.Bottom;
-    }
-
-    private static string Compact(double bytesPerSecond)
-    {
-        double value = Math.Max(0, bytesPerSecond);
-
-        if (value < 1024)
-            return value.ToString("0") + "B/s";
-        if (value < 1024d * 1024)
-            return (value / 1024).ToString("0.#") + "K/s";
-        if (value < 1024d * 1024 * 1024)
-            return (value / (1024d * 1024)).ToString("0.#") + "M/s";
-        return (value / (1024d * 1024 * 1024)).ToString("0.#") + "G/s";
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

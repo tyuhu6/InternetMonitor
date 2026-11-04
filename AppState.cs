@@ -22,6 +22,7 @@ public sealed class AppState
     public bool ShowTaskbarSpeed { get; set; } = true;
     public string FontFamily { get; set; } = "Microsoft YaHei UI";
     public double FontScale { get; set; } = 1.0;
+    public string SpeedUnit { get; set; } = nameof(SpeedUnitMode.Auto);
     public string BgColor { get; set; } = "#FFFFFF";
     public string TextColor { get; set; } = "#101318";
     public string DownColor { get; set; } = "#2F6BFF";

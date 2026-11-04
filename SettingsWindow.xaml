@@ -278,6 +278,8 @@
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
             <Setter Property="FontSize" Value="11" />
             <Setter Property="Padding" Value="10,6" />
+            <!-- 弹层里的点击默认走 MouseUp 选中，容易在弹层收起时丢掉，这里按下就选中 -->
+            <EventSetter Event="PreviewMouseLeftButtonDown" Handler="ComboItem_PreviewMouseDown" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ComboBoxItem">
@@ -425,6 +427,21 @@
                                       AutomationProperties.Name="开机自动启动"
                                       HorizontalAlignment="Right" VerticalAlignment="Center"
                                       Checked="StartupSwitch_Changed" Unchecked="StartupSwitch_Changed" />
+                    </Grid>
+
+                    <Rectangle Style="{StaticResource Hairline}" Margin="0,16,0,0" />
+                    <TextBlock Text="单位" Style="{StaticResource SectionLabel}" />
+
+                    <Grid Height="38">
+                        <TextBlock Text="网速显示" Style="{StaticResource RowLabel}" />
+                        <ComboBox x:Name="SpeedUnitCombo" Style="{StaticResource DarkCombo}"
+                                  AutomationProperties.Name="网速显示单位"
+                                  HorizontalAlignment="Right" VerticalAlignment="Center"
+                                  SelectionChanged="SpeedUnitCombo_SelectionChanged">
+                            <ComboBoxItem Content="自适应  KB/s" />
+                            <ComboBoxItem Content="简洁  K/s" />
+                            <ComboBoxItem Content="比特  Mbps" />
+                        </ComboBox>
                     </Grid>
 
                     <Rectangle Style="{StaticResource Hairline}" Margin="0,16,0,0" />

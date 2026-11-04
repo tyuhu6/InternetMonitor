@@ -96,6 +96,7 @@ public partial class MainWindow : Window
         UpdatePinVisual();
 
         _taskbar?.ApplyAppearance(_appearance);
+        _taskbar?.SetSpeedUnit(SpeedFormatter.Parse(_state.SpeedUnit));
         RefreshUsage();
 
         if (IsLoaded)
@@ -133,6 +134,7 @@ public partial class MainWindow : Window
             {
                 _taskbar = new TaskbarSpeedWindow();
                 _taskbar.ApplyAppearance(_appearance);
+                _taskbar.SetSpeedUnit(SpeedFormatter.Parse(_state.SpeedUnit));
             }
 
             _taskbar.SetEnabled(true);
@@ -223,6 +225,21 @@ public partial class MainWindow : Window
         var (rxValue, rxUnit) = FormatSpeed(rxSpeed);
         var (txValue, txUnit) = FormatSpeed(txSpeed);
 
+        ShowSpeed(rxValue, rxUnit, txValue, txUnit);
+
+        Chart.AddSample(rxSpeed, txSpeed);
+        RefreshUsage();
+
+        if (_state.ShowTaskbarSpeed)
+            _taskbar?.SetSpeed(rxSpeed, txSpeed);
+
+        if (++_tickCount % SaveEveryTicks == 0)
+            SaveStateNow();
+    }
+
+    /// <summary>把上下行数值写进界面，同时更新峰值和托盘提示。</summary>
+    private void ShowSpeed(string rxValue, string rxUnit, string txValue, string txUnit)
+    {
         RxValue.Text = rxValue;
         RxUnit.Text = rxUnit;
         TxValue.Text = txValue;
@@ -232,17 +249,20 @@ public partial class MainWindow : Window
         var (peakTxValue, peakTxUnit) = FormatSpeed(_state.PeakTx);
         PeakText.Text = $"峰值 ↓ {peakRxValue} {peakRxUnit}   ↑ {peakTxValue} {peakTxUnit}";
 
-        Chart.AddSample(rxSpeed, txSpeed);
-        RefreshUsage();
-
-        if (_state.ShowTaskbarSpeed)
-            _taskbar?.SetSpeed(rxSpeed, txSpeed);
-
         string tip = $"网络监控  ↓ {rxValue} {rxUnit}  ↑ {txValue} {txUnit}";
         _tray.Text = tip.Length > 63 ? tip[..63] : tip;
+    }
 
-        if (++_tickCount % SaveEveryTicks == 0)
-            SaveStateNow();
+    /// <summary>切换单位后立即按新单位重画，不用等下一次采集。</summary>
+    public void ApplySpeedUnit()
+    {
+        var mode = SpeedFormatter.Parse(_state.SpeedUnit);
+
+        _taskbar?.SetSpeedUnit(mode);
+
+        var (rxValue, rxUnit) = SpeedFormatter.Format(_lastRxSpeed, mode);
+        var (txValue, txUnit) = SpeedFormatter.Format(_lastTxSpeed, mode);
+        ShowSpeed(rxValue, rxUnit, txValue, txUnit);
     }
 
     private void RolloverDayIfNeeded()
@@ -586,18 +606,8 @@ public partial class MainWindow : Window
         _settings?.Close();
     }
 
-    private static (string Value, string Unit) FormatSpeed(double bytesPerSecond)
-    {
-        double value = Math.Max(0, bytesPerSecond);
-
-        if (value < 1024)
-            return (value.ToString("0"), "B/s");
-        if (value < 1024d * 1024)
-            return ((value / 1024).ToString("0.0"), "KB/s");
-        if (value < 1024d * 1024 * 1024)
-            return ((value / (1024d * 1024)).ToString("0.00"), "MB/s");
-        return ((value / (1024d * 1024 * 1024)).ToString("0.00"), "GB/s");
-    }
+    private (string Value, string Unit) FormatSpeed(double bytesPerSecond) =>
+        SpeedFormatter.Format(bytesPerSecond, SpeedFormatter.Parse(_state.SpeedUnit));
 
     private static string FormatBytes(ulong bytes)
     {
