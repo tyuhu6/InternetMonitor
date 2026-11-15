@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Win32;
 
 namespace InternetMonitor;
 
@@ -59,6 +60,22 @@ public partial class TaskbarSpeedWindow : Window
         ApplyAppearance(new Appearance());
 
         _followTimer.Tick += (_, _) => Reposition();
+
+        // 显示器插拔/分辨率变化时，重置所有缓存让 Reposition 立即重新探测
+        SystemEvents.DisplaySettingsChanged += (_, _) => InvalidateLayoutCache();
+    }
+
+    private void InvalidateLayoutCache()
+    {
+        _lastScaleProbe = DateTime.MinValue;
+        _trayNotifyWnd = IntPtr.Zero;
+        _isAttached = false;
+        _trayWnd = IntPtr.Zero;
+        _lastLeft = double.NaN;
+        _lastTop = double.NaN;
+
+        if (IsVisible)
+            Reposition();
     }
 
     /// <summary>启用后持续跟随任务栏位置。</summary>

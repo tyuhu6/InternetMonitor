@@ -14,7 +14,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyTitle>网络监控</AssemblyTitle>
     <Product>InternetMonitor</Product>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <DebugType>none</DebugType>
 
     <!-- 发布为单文件绿色 exe：自包含 .NET 运行时，原生 DLL 也打进 exe，复制一个文件即可运行 -->

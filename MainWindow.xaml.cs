@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using WinForms = System.Windows.Forms;
 
 namespace InternetMonitor;
@@ -59,6 +60,9 @@ public partial class MainWindow : Window
 
         _tray = CreateTray();
         _tray.MouseDoubleClick += (_, _) => ToggleVisibility();
+
+        // 显示器插拔/分辨率变化时，把窗口拉回新的可见区域
+        SystemEvents.DisplaySettingsChanged += (_, _) => KeepWindowOnScreen();
 
         Loaded += (_, _) =>
         {
@@ -402,6 +406,50 @@ public partial class MainWindow : Window
 
         Left = Math.Max(minLeft, Math.Min(left, maxLeft));
         Top = Math.Max(minTop, Math.Min(top, maxTop));
+    }
+
+    /// <summary>
+    /// 显示器插拔后，VirtualScreen 范围变化，窗口可能跑到屏幕外。
+    /// 把它拉回新的虚拟屏幕可见区域内。
+    /// </summary>
+    private void KeepWindowOnScreen()
+    {
+        if (!IsLoaded)
+            return;
+
+        // 等布局刷新完成（DPI 变化可能导致 ActualWidth/Height 改变）
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            // 先让系统更新 SystemParameters
+            SystemParameters.WorkArea.Equals(null);
+
+            double width = ActualWidth > 0 ? ActualWidth : Width;
+            double height = ActualHeight > 0 ? ActualHeight : Height;
+
+            double vLeft = SystemParameters.VirtualScreenLeft;
+            double vTop = SystemParameters.VirtualScreenTop;
+            double vRight = vLeft + SystemParameters.VirtualScreenWidth;
+            double vBottom = vTop + SystemParameters.VirtualScreenHeight;
+
+            // 检查窗口是否至少还有一部分在屏幕内
+            bool visibleHorizontally = Left + width > vLeft + 8 && Left < vRight - 8;
+            bool visibleVertically = Top + height > vTop + 8 && Top < vBottom - 8;
+
+            if (!visibleHorizontally || !visibleVertically)
+            {
+                // 完全不可见（比如之前在第二显示器上），放到主屏幕工作区右上角
+                double newLeft = SystemParameters.WorkArea.Right - width - 24;
+                double newTop = SystemParameters.WorkArea.Top + 72;
+                SetPosition(newLeft, newTop);
+            }
+            else
+            {
+                // 还有一部分可见，只是越界了，用 SetPosition 限制一下
+                SetPosition(Left, Top);
+            }
+
+            SaveStateNow();
+        }), DispatcherPriority.Input);
     }
 
     private WinForms.NotifyIcon CreateTray()
